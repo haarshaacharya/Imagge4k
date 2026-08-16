@@ -10,12 +10,18 @@ import {
   Sliders,
   Columns,
   Maximize2,
+  Shapes,
+  User,
+  SlidersHorizontal,
+  ChevronDown,
 } from 'lucide-react';
 import {
   enhanceImage,
   formatBytes,
   getEnhancementLabel,
-  type EnhancementType,
+  getModeLabel,
+  type EnhancementScale,
+  type EnhancementMode,
   type EnhancementResult,
 } from '@/lib/imageEnhancer';
 import { supabase } from '@/lib/supabase';
@@ -31,16 +37,17 @@ interface UploadedImage {
   height: number;
 }
 
-const TARGET_MAX_DIMENSIONS: Record<EnhancementType, number> = {
-  '2k': 2560,
-  '4k': 3840,
-  '8k': 7680,
-};
-
 export default function ImageUploader() {
   const [stage, setStage] = useState<Stage>('idle');
   const [uploadedImage, setUploadedImage] = useState<UploadedImage | null>(null);
-  const [enhancementType, setEnhancementType] = useState<EnhancementType>('4k');
+  
+  // Default to Ultra Sharp Studio mode for razor-sharp logos & graphics
+  const [enhancementMode, setEnhancementMode] = useState<EnhancementMode>('ultra-sharp');
+  const [scale, setScale] = useState<EnhancementScale>('4x');
+  const [enhanceQuality, setEnhanceQuality] = useState<boolean>(true);
+  const [sharpness, setSharpness] = useState<number>(95);
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
+
   const [result, setResult] = useState<EnhancementResult | null>(null);
   const [progress, setProgress] = useState(0);
   const [progressStage, setProgressStage] = useState('');
@@ -59,8 +66,8 @@ export default function ImageUploader() {
       setStage('error');
       return;
     }
-    if (file.size > 30 * 1024 * 1024) {
-      setError('Image must be under 30MB.');
+    if (file.size > 50 * 1024 * 1024) {
+      setError('Image must be under 50MB.');
       setStage('error');
       return;
     }
@@ -97,10 +104,19 @@ export default function ImageUploader() {
     setError('');
 
     try {
-      const res = await enhanceImage(uploadedImage.file, enhancementType, (p, s) => {
-        setProgress(p);
-        setProgressStage(s);
-      });
+      const res = await enhanceImage(
+        uploadedImage.file,
+        {
+          scale,
+          mode: enhancementMode,
+          enhanceQuality,
+          sharpness,
+        },
+        (p, s) => {
+          setProgress(p);
+          setProgressStage(s);
+        }
+      );
       setResult(res);
       setStage('done');
 
@@ -109,7 +125,7 @@ export default function ImageUploader() {
         .from('enhancement_logs')
         .insert({
           session_id: getSessionId(),
-          enhancement_type: enhancementType,
+          enhancement_type: scale === '8x' ? '8k' : scale === '4x' ? '4k' : '2k',
           original_size: uploadedImage.file.size,
         })
         .then(({ error: logErr }) => {
@@ -126,7 +142,7 @@ export default function ImageUploader() {
     if (!result) return;
     const a = document.createElement('a');
     a.href = result.url;
-    a.download = `image-${enhancementType}-hd-${Date.now()}.png`;
+    a.download = `imagge4k-${result.mode}-${result.scale}-${result.width}x${result.height}.png`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -151,14 +167,12 @@ export default function ImageUploader() {
     setSliderPosition(percentage);
   };
 
-  const getExpectedDimensions = (type: EnhancementType) => {
+  const getMultiplierNum = (s: EnhancementScale) => (s === '8x' ? 8 : s === '4x' ? 4 : 2);
+
+  const getCalculatedDimensions = (targetScale: EnhancementScale) => {
     if (!uploadedImage) return '';
-    const maxDim = Math.max(uploadedImage.width, uploadedImage.height);
-    const targetDim = TARGET_MAX_DIMENSIONS[type];
-    const scale = targetDim / maxDim;
-    const w = Math.round(uploadedImage.width * scale);
-    const h = Math.round(uploadedImage.height * scale);
-    return `${w} × ${h}px`;
+    const mult = getMultiplierNum(targetScale);
+    return `${uploadedImage.width * mult} × ${uploadedImage.height * mult}px`;
   };
 
   return (
@@ -195,16 +209,18 @@ export default function ImageUploader() {
             </div>
             <div>
               <h3 className="text-xl md:text-2xl font-semibold text-white mb-2">
-                Drop your image here to enhance
+                Drop your image or logo here to enhance
               </h3>
               <p className="text-ink-400 text-sm max-w-md mx-auto">
-                Turn any blurry photo, artwork, or logo into ultra-crisp <strong className="text-brand-300">2K, 4K, or 8K</strong> resolution in seconds.
+                Turn blurry photos, neon bevels, or logos into razor-sharp <strong className="text-brand-300">2K, 4K, or 8K</strong> resolution with Ultra-Sharp Studio Engine.
               </p>
             </div>
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-ink-300">
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-ink-300">
               <span>Supports PNG, JPG, WebP</span>
               <span>•</span>
-              <span>Up to 30MB</span>
+              <span>Shock-Filter & Turbo CAS</span>
+              <span>•</span>
+              <span>Up to 50MB</span>
             </div>
           </div>
         </div>
@@ -218,7 +234,7 @@ export default function ImageUploader() {
           </div>
           <h3 className="text-lg font-semibold text-white mb-2">Enhancement Issue</h3>
           <p className="text-red-300 mb-6 max-w-md mx-auto text-sm">{error}</p>
-          <button onClick={reset} className="btn-ghost">
+          <button onClick={reset} className="btn-ghost cursor-pointer">
             Try Again
           </button>
         </div>
@@ -228,102 +244,204 @@ export default function ImageUploader() {
       {stage === 'uploaded' && uploadedImage && (
         <div className="animate-slide-up">
           <div className="glass rounded-3xl overflow-hidden shadow-2xl">
-            <div className="relative bg-ink-950/60 p-4">
+            {/* Image Preview Banner */}
+            <div className="relative bg-ink-950/70 p-4 border-b border-white/10">
               <img
                 src={uploadedImage.url}
                 alt="Uploaded preview"
-                className="w-full max-h-[380px] object-contain mx-auto rounded-xl"
+                className="w-full max-h-[340px] object-contain mx-auto rounded-xl"
               />
-              <div className="absolute top-6 right-6 glass-brand rounded-lg px-3 py-1.5 text-xs text-brand-200 font-medium">
+              <div className="absolute top-6 right-6 glass-brand rounded-lg px-3 py-1.5 text-xs text-brand-200 font-medium border border-brand-500/30">
                 Original: {uploadedImage.width} × {uploadedImage.height}px · {formatBytes(uploadedImage.file.size)}
               </div>
               <button
                 onClick={reset}
-                className="absolute top-6 left-6 w-9 h-9 rounded-lg glass flex items-center justify-center hover:bg-white/10 transition"
+                className="absolute top-6 left-6 w-9 h-9 rounded-lg glass flex items-center justify-center hover:bg-white/10 transition cursor-pointer"
                 title="Cancel"
               >
                 <X className="w-5 h-5 text-white" />
               </button>
             </div>
 
-            <div className="p-6 md:p-8">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-lg font-semibold text-white">Select Target Quality</h3>
-                <span className="text-xs text-ink-400">AI Super-Resolution Engine</span>
+            {/* Controls Panel */}
+            <div className="p-6 md:p-8 space-y-6">
+              {/* Row 1: AI Model / Mode Selector */}
+              <div>
+                <label className="block text-sm font-semibold text-white mb-2 flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-brand-400" />
+                  Select AI Enhancement Mode
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {(
+                    [
+                      {
+                        id: 'ultra-sharp',
+                        title: 'Ultra Sharp Studio',
+                        desc: 'Shock filter, metallic bevels & razor edges',
+                        icon: Zap,
+                        badge: 'Ultra Crisp',
+                      },
+                      {
+                        id: 'vector-logo',
+                        title: 'Vector & Logo',
+                        desc: 'Anti-aliased curves & text sharpness',
+                        icon: Shapes,
+                      },
+                      {
+                        id: 'super-resolution',
+                        title: 'Super Resolution',
+                        desc: 'Photos, landscapes & real textures',
+                        icon: Sparkles,
+                      },
+                      {
+                        id: 'face-portrait',
+                        title: 'Face & Portrait',
+                        desc: 'Skin clarity, eyes & hair depth',
+                        icon: User,
+                      },
+                    ] as const
+                  ).map((m) => {
+                    const Icon = m.icon;
+                    const isSelected = enhancementMode === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setEnhancementMode(m.id)}
+                        className={`relative rounded-2xl p-4 text-left transition-all duration-200 border flex flex-col justify-between cursor-pointer ${
+                          isSelected
+                            ? 'glass-brand border-brand-500/70 shadow-lg shadow-brand-500/20 bg-brand-500/15'
+                            : 'glass border-white/10 hover:border-white/20 hover:bg-white/[0.04]'
+                        }`}
+                      >
+                        {m.badge && (
+                          <span className="absolute -top-2.5 right-3 bg-brand-600 text-white text-[9px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full border border-brand-400/40">
+                            {m.badge}
+                          </span>
+                        )}
+                        <div>
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <div className={`p-1.5 rounded-lg ${isSelected ? 'bg-brand-500/30 text-brand-300' : 'bg-white/5 text-ink-300'}`}>
+                              <Icon className="w-4 h-4" />
+                            </div>
+                            <span className={`text-sm font-semibold ${isSelected ? 'text-white' : 'text-ink-200'}`}>
+                              {m.title}
+                            </span>
+                          </div>
+                          <p className="text-xs text-ink-400 line-clamp-2">{m.desc}</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-              <p className="text-ink-400 text-sm mb-6">
-                Choose the desired output resolution. AI detail reconstruction enhances clarity, sharpens edges, and removes blur.
-              </p>
 
-              {/* 2K / 4K / 8K Options */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-                {(
-                  [
-                    {
-                      id: '2k',
-                      title: '2K Quad HD',
-                      sub: '2560px Max',
-                      desc: 'Fast, great for Web & Socials',
-                    },
-                    {
-                      id: '4k',
-                      title: '4K Ultra HD',
-                      sub: '3840px Max',
-                      desc: 'Ultra Sharp & Recommended',
-                      popular: true,
-                    },
-                    {
-                      id: '8k',
-                      title: '8K Cinema HD',
-                      sub: '7680px Max',
-                      desc: 'Maximum Detail & Posters',
-                    },
-                  ] as const
-                ).map((opt) => (
-                  <button
-                    key={opt.id}
-                    onClick={() => setEnhancementType(opt.id)}
-                    className={`relative rounded-2xl p-5 text-left transition-all duration-300 border flex flex-col justify-between ${
-                      enhancementType === opt.id
-                        ? 'glass-brand border-brand-500/60 shadow-lg shadow-brand-500/20 scale-[1.02]'
-                        : 'glass border-white/10 hover:border-white/20 hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    {opt.popular && (
-                      <span className="absolute -top-2.5 right-3 bg-brand-600 text-white text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full border border-brand-400/40">
-                        Popular
-                      </span>
-                    )}
-                    <div>
-                      <div className="flex items-baseline justify-between mb-1">
-                        <span
-                          className={`text-xl font-display font-bold ${
-                            enhancementType === opt.id ? 'text-brand-300' : 'text-white'
-                          }`}
-                        >
-                          {opt.id.toUpperCase()}
-                        </span>
-                        <span className="text-xs text-brand-400 font-medium">{opt.sub}</span>
+              {/* Row 2: Upscale Multiplier & Quality Toggles */}
+              <div className="grid sm:grid-cols-2 gap-6 pt-2 border-t border-white/10">
+                {/* Upscale Multipliers */}
+                <div>
+                  <label className="block text-sm font-semibold text-white mb-2 flex items-center justify-between">
+                    <span>Upscale Multiplier</span>
+                    <span className="text-xs text-brand-400 font-normal">
+                      Output: {getCalculatedDimensions(scale)}
+                    </span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(
+                      [
+                        { id: '2x', label: '2×', title: '2K Quad HD' },
+                        { id: '4x', label: '4×', title: '4K Ultra HD', popular: true },
+                        { id: '8x', label: '8×', title: '8K Cinema HD' },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setScale(opt.id)}
+                        className={`relative py-3 px-3 rounded-xl font-medium text-sm transition-all duration-200 border flex flex-col items-center justify-center cursor-pointer ${
+                          scale === opt.id
+                            ? 'bg-brand-600/30 text-brand-200 border-brand-500 shadow-md shadow-brand-500/20 font-bold'
+                            : 'bg-white/[0.03] text-ink-300 border-white/10 hover:border-white/20'
+                        }`}
+                      >
+                        {opt.popular && (
+                          <span className="absolute -top-2 bg-brand-500 text-[9px] px-1.5 py-0.2 rounded-full font-bold text-white uppercase">
+                            Best
+                          </span>
+                        )}
+                        <span className="text-base font-display">{opt.label}</span>
+                        <span className="text-[10px] text-ink-400">{opt.title}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Quality & Detail Toggles */}
+                <div className="flex flex-col justify-center gap-3">
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.03] border border-white/10">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-1.5 rounded-lg bg-brand-500/20 text-brand-300">
+                        <Zap className="w-4 h-4" />
                       </div>
-                      <div className="text-sm font-medium text-white/90 mb-1">{opt.title}</div>
-                      <p className="text-xs text-ink-400">{opt.desc}</p>
+                      <div>
+                        <div className="text-sm font-medium text-white">Enhance Quality</div>
+                        <div className="text-xs text-ink-400">Shock-filter & specular ridge sharpness</div>
+                      </div>
                     </div>
-                    <div className="mt-3 pt-2.5 border-t border-white/10 flex items-center justify-between text-xs">
-                      <span className="text-ink-400">Target size:</span>
-                      <span className="font-semibold text-brand-200">
-                        {getExpectedDimensions(opt.id)}
-                      </span>
-                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={enhanceQuality}
+                        onChange={(e) => setEnhanceQuality(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-ink-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-brand-500" />
+                    </label>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="text-xs text-brand-300 hover:text-brand-200 flex items-center gap-1 self-start cursor-pointer"
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    {showAdvanced ? 'Hide Sharpness Tuning' : 'Adjust CAS Sharpness (Default 95%)'}
+                    <ChevronDown className={`w-3 h-3 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
                   </button>
-                ))}
+                </div>
               </div>
 
+              {/* Advanced Sharpness Slider */}
+              {showAdvanced && (
+                <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/10 space-y-3 animate-fade-in">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-ink-300 font-medium">Turbo Contrast-Adaptive Sharpness (CAS)</span>
+                    <span className="text-brand-300 font-bold">{sharpness}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="50"
+                    max="100"
+                    value={sharpness}
+                    onChange={(e) => setSharpness(Number(e.target.value))}
+                    className="w-full accent-brand-400 cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[10px] text-ink-500">
+                    <span>Balanced (50%)</span>
+                    <span>High (85%)</span>
+                    <span>Ultra Razor Sharp (100%)</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Action Button */}
               <button
+                type="button"
                 onClick={handleEnhance}
-                className="btn-primary w-full flex items-center justify-center gap-2 text-base py-3.5 shadow-lg shadow-brand-500/25 cursor-pointer"
+                className="btn-primary w-full flex items-center justify-center gap-2 text-base py-4 shadow-xl shadow-brand-500/25 cursor-pointer rounded-2xl"
               >
-                <Sparkles className="w-5 h-5 text-brand-200" />
-                Enhance to {getEnhancementLabel(enhancementType)}
+                <Zap className="w-5 h-5 text-brand-200" />
+                Upscale to {scale.toUpperCase()} ({getCalculatedDimensions(scale)})
               </button>
             </div>
           </div>
@@ -334,7 +452,7 @@ export default function ImageUploader() {
       {stage === 'enhancing' && uploadedImage && (
         <div className="animate-fade-in">
           <div className="glass rounded-3xl overflow-hidden shadow-2xl">
-            <div className="relative bg-ink-950/70 p-6 min-h-[420px] flex flex-col items-center justify-center gap-6">
+            <div className="relative bg-ink-950/80 p-8 min-h-[420px] flex flex-col items-center justify-center gap-6">
               <div className="relative">
                 <div className="w-24 h-24 rounded-full border-4 border-brand-500/20" />
                 <div className="absolute inset-0 w-24 h-24 rounded-full border-4 border-transparent border-t-brand-400 animate-spin" />
@@ -343,14 +461,15 @@ export default function ImageUploader() {
                 </div>
               </div>
 
-              <div className="text-center max-w-sm">
-                <p className="text-xs uppercase tracking-widest text-brand-400 font-semibold mb-1">
-                  Enhancing to {enhancementType.toUpperCase()}
-                </p>
+              <div className="text-center max-w-md">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-brand-500/10 border border-brand-500/30 text-brand-300 text-xs font-semibold mb-2">
+                  <Zap className="w-3.5 h-3.5" />
+                  Mode: {getModeLabel(enhancementMode).title} ({scale.toUpperCase()})
+                </div>
                 <p className="text-white font-medium text-base mb-2">{progressStage}</p>
-                <p className="text-brand-300 text-3xl font-display font-extrabold">{progress}%</p>
+                <p className="text-brand-300 text-4xl font-display font-extrabold">{progress}%</p>
                 <p className="text-ink-400 text-xs mt-3">
-                  Reconstructing neural textures and generating crystal-clear pixels.
+                  Generating ultra-sharp specular ridges & anti-aliased pixels at {getCalculatedDimensions(scale)}.
                 </p>
               </div>
 
@@ -365,16 +484,17 @@ export default function ImageUploader() {
         </div>
       )}
 
-      {/* 5. Result Done Stage */}
+      {/* 5. Result Done Stage (Interactive Comparison Slider) */}
       {stage === 'done' && uploadedImage && result && (
         <div className="animate-slide-up">
           <div className="glass rounded-3xl overflow-hidden shadow-2xl">
-            {/* View Mode Controls */}
-            <div className="px-6 py-3.5 bg-ink-950/80 border-b border-white/10 flex flex-wrap items-center justify-between gap-3">
+            {/* View Mode Controls Bar */}
+            <div className="px-6 py-3.5 bg-ink-950/90 border-b border-white/10 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <button
+                  type="button"
                   onClick={() => setViewMode('slider')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
                     viewMode === 'slider'
                       ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40'
                       : 'text-ink-400 hover:text-white'
@@ -384,8 +504,9 @@ export default function ImageUploader() {
                   Split Comparison Slider
                 </button>
                 <button
+                  type="button"
                   onClick={() => setViewMode('side-by-side')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
                     viewMode === 'side-by-side'
                       ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40'
                       : 'text-ink-400 hover:text-white'
@@ -398,12 +519,13 @@ export default function ImageUploader() {
 
               <div className="flex items-center gap-3">
                 <div className="text-xs text-ink-300">
-                  <span className="text-brand-300 font-semibold">{result.width} × {result.height}px</span> ({enhancementType.toUpperCase()})
+                  <span className="text-brand-300 font-semibold">{result.width} × {result.height}px</span> ({result.scale.toUpperCase()})
                 </div>
                 <button
+                  type="button"
                   onClick={() => setIsZoomed(true)}
-                  className="p-1.5 rounded-lg glass hover:bg-white/10 text-ink-300 hover:text-white transition"
-                  title="Full View"
+                  className="p-1.5 rounded-lg glass hover:bg-white/10 text-ink-300 hover:text-white transition cursor-pointer"
+                  title="Full View / Zoom"
                 >
                   <Maximize2 className="w-4 h-4" />
                 </button>
@@ -414,9 +536,10 @@ export default function ImageUploader() {
             {viewMode === 'slider' ? (
               <div
                 ref={sliderContainerRef}
+                onMouseDown={(e) => handleSliderMove(e.clientX)}
                 onMouseMove={(e) => e.buttons === 1 && handleSliderMove(e.clientX)}
                 onTouchMove={(e) => handleSliderMove(e.touches[0].clientX)}
-                className="relative w-full h-[440px] md:h-[500px] select-none cursor-ew-resize bg-ink-950 overflow-hidden"
+                className="relative w-full h-[460px] md:h-[540px] select-none cursor-ew-resize bg-ink-950 overflow-hidden"
               >
                 {/* After (Enhanced) Image */}
                 <img
@@ -425,7 +548,7 @@ export default function ImageUploader() {
                   className="absolute inset-0 w-full h-full object-contain pointer-events-none"
                 />
 
-                {/* Before (Original) Image with clip path */}
+                {/* Before (Original) Image with clip mask */}
                 <div
                   className="absolute inset-0 overflow-hidden pointer-events-none"
                   style={{ width: `${sliderPosition}%` }}
@@ -443,20 +566,20 @@ export default function ImageUploader() {
 
                 {/* Divider Line */}
                 <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-brand-400 shadow-[0_0_12px_rgba(168,85,247,0.8)] pointer-events-none"
+                  className="absolute top-0 bottom-0 w-0.5 bg-brand-400 shadow-[0_0_15px_rgba(168,85,247,0.9)] pointer-events-none"
                   style={{ left: `${sliderPosition}%` }}
                 >
-                  <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-brand-500 text-white shadow-xl flex items-center justify-center border-2 border-white/80">
+                  <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-9 h-9 rounded-full bg-brand-500 text-white shadow-2xl flex items-center justify-center border-2 border-white/90">
                     <Sliders className="w-4 h-4" />
                   </div>
                 </div>
 
                 {/* Labels */}
-                <div className="absolute top-4 left-4 glass px-2.5 py-1 rounded-md text-xs font-semibold text-white/80 pointer-events-none">
-                  BEFORE ({uploadedImage.width}×{uploadedImage.height})
+                <div className="absolute top-4 left-4 glass px-3 py-1.5 rounded-lg text-xs font-semibold text-white/90 pointer-events-none border border-white/10">
+                  Before {uploadedImage.width} × {uploadedImage.height}
                 </div>
-                <div className="absolute top-4 right-4 glass-brand px-2.5 py-1 rounded-md text-xs font-semibold text-brand-300 pointer-events-none">
-                  AFTER ({result.width}×{result.height} {enhancementType.toUpperCase()})
+                <div className="absolute top-4 right-4 glass-brand px-3 py-1.5 rounded-lg text-xs font-semibold text-brand-200 pointer-events-none border border-brand-500/40">
+                  After {result.width} × {result.height} ({result.scale.toUpperCase()})
                 </div>
               </div>
             ) : (
@@ -480,7 +603,7 @@ export default function ImageUploader() {
                   <div className="flex items-center gap-2 mb-3">
                     <CheckCircle2 className="w-4 h-4 text-brand-400" />
                     <span className="text-xs text-brand-300 font-medium uppercase tracking-wider">
-                      After ({getEnhancementLabel(enhancementType)})
+                      After ({getEnhancementLabel(result.scale)})
                     </span>
                   </div>
                   <img
@@ -495,33 +618,35 @@ export default function ImageUploader() {
               </div>
             )}
 
-            {/* Bottom Actions */}
-            <div className="p-6 md:p-8 flex flex-col sm:flex-row items-center justify-between gap-4 bg-ink-950/40">
+            {/* Bottom Actions Bar */}
+            <div className="p-6 md:p-8 flex flex-col sm:flex-row items-center justify-between gap-4 bg-ink-950/60 border-t border-white/10">
               <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-2xl glass-brand flex items-center justify-center">
-                  <Sparkles className="w-6 h-6 text-brand-400" />
+                <div className="w-12 h-12 rounded-2xl glass-brand flex items-center justify-center border border-brand-500/30">
+                  <Zap className="w-6 h-6 text-brand-400" />
                 </div>
                 <div>
                   <p className="text-white font-semibold text-base">
-                    Enhanced to {getEnhancementLabel(enhancementType)}
+                    Upscaled to {getEnhancementLabel(result.scale)}
                   </p>
                   <p className="text-ink-400 text-xs">
-                    Original {uploadedImage.width}×{uploadedImage.height}px → Clean {result.width}×{result.height}px
+                    Mode: {getModeLabel(result.mode).title} · {result.width}×{result.height}px
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-3 w-full sm:w-auto">
                 <button
+                  type="button"
                   onClick={reset}
-                  className="btn-ghost flex items-center gap-2 flex-1 sm:flex-none justify-center"
+                  className="btn-ghost flex items-center gap-2 flex-1 sm:flex-none justify-center cursor-pointer"
                 >
                   <X className="w-4 h-4" />
-                  New Image
+                  Upscale Another
                 </button>
                 <button
+                  type="button"
                   onClick={handleDownload}
-                  className="btn-primary flex items-center gap-2 flex-1 sm:flex-none justify-center shadow-lg shadow-brand-500/25"
+                  className="btn-primary flex items-center gap-2 flex-1 sm:flex-none justify-center shadow-lg shadow-brand-500/25 cursor-pointer"
                 >
                   <Download className="w-5 h-5" />
                   Download HD ({result.width}×{result.height})
@@ -536,19 +661,25 @@ export default function ImageUploader() {
       {isZoomed && result && (
         <div
           onClick={() => setIsZoomed(false)}
-          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 cursor-zoom-out animate-fade-in"
+          className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex items-center justify-center p-4 cursor-zoom-out animate-fade-in"
         >
           <button
+            type="button"
             onClick={() => setIsZoomed(false)}
-            className="absolute top-6 right-6 w-10 h-10 rounded-full glass flex items-center justify-center text-white hover:bg-white/20 transition"
+            className="absolute top-6 right-6 w-10 h-10 rounded-full glass flex items-center justify-center text-white hover:bg-white/20 transition cursor-pointer"
           >
             <X className="w-6 h-6" />
           </button>
-          <img
-            src={result.url}
-            alt="Enhanced Full HD"
-            className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl"
-          />
+          <div className="max-w-full max-h-[92vh] flex flex-col items-center gap-2">
+            <img
+              src={result.url}
+              alt="Enhanced Full HD"
+              className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-2xl border border-white/10"
+            />
+            <div className="glass px-4 py-1.5 rounded-full text-xs text-ink-300">
+              Master Resolution: <span className="text-brand-300 font-bold">{result.width} × {result.height}px</span> ({result.scale.toUpperCase()})
+            </div>
+          </div>
         </div>
       )}
     </div>
