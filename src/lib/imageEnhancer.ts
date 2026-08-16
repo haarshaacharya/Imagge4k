@@ -15,7 +15,6 @@ export interface EnhancementOptions {
   enhanceQuality?: boolean;
   sharpness?: number; // 0 to 100
   denoise?: boolean;
-  ultraClarity?: boolean;
 }
 
 export interface EnhancementResult {
@@ -116,7 +115,7 @@ function hasTransparency(canvas: HTMLCanvasElement): boolean {
   return false;
 }
 
-// High-fidelity progressive multi-step scaler
+// Progressive stepped scale for high-fidelity interpolation
 function progressiveScale(
   source: HTMLCanvasElement,
   targetWidth: number,
@@ -151,13 +150,14 @@ function progressiveScale(
 }
 
 // -------------------------------------------------------------
-// 1. Morphological Shock Filter (Osher-Rudin PDE)
-// Turns blurry gradients along edges into crisp, mathematical step edges
+// 1. Color-Safe Luminance-Only Ultra Sharpening & Micro-Contrast
+// Transforms blurry edges & specular bevels into razor-sharp lines
+// without ANY color distortion or artifacts
 // -------------------------------------------------------------
-export function applyShockFilter(
+export function applyLuminanceEdgeSharpening(
   canvas: HTMLCanvasElement,
-  iterations: number = 2,
-  dt: number = 0.28
+  sharpnessPercentage: number = 85,
+  mode: EnhancementMode = 'ultra-sharp'
 ): void {
   const ctx = getCanvasContext(canvas);
   const w = canvas.width;
@@ -166,129 +166,63 @@ export function applyShockFilter(
   const data = imgData.data;
   const stride = w * 4;
 
-  for (let iter = 0; iter < iterations; iter++) {
-    const src = new Uint8ClampedArray(data);
+  const strength = Math.max(0.1, Math.min(1.0, sharpnessPercentage / 100));
+  const isGraphicMode = mode === 'ultra-sharp' || mode === 'vector-logo';
+  const sharpAmount = isGraphicMode ? 0.75 * strength : 0.45 * strength;
 
-    for (let y = 1; y < h - 1; y++) {
-      const yOff = y * stride;
-      for (let x = 1; x < w - 1; x++) {
-        const idx = yOff + x * 4;
-
-        // Luminance calculations
-        const lC = (src[idx] * 299 + src[idx + 1] * 587 + src[idx + 2] * 114) / 1000;
-        const lU = (src[idx - stride] * 299 + src[idx - stride + 1] * 587 + src[idx - stride + 2] * 114) / 1000;
-        const lD = (src[idx + stride] * 299 + src[idx + stride + 1] * 587 + src[idx + stride + 2] * 114) / 1000;
-        const lL = (src[idx - 4] * 299 + src[idx - 3] * 587 + src[idx - 2] * 114) / 1000;
-        const lR = (src[idx + 4] * 299 + src[idx + 5] * 587 + src[idx + 6] * 114) / 1000;
-
-        // Laplacian
-        const laplacian = lU + lD + lL + lR - 4 * lC;
-
-        // Gradient magnitude
-        const gx = (lR - lL) * 0.5;
-        const gy = (lD - lU) * 0.5;
-        const gradMag = Math.sqrt(gx * gx + gy * gy);
-
-        if (gradMag > 4) {
-          const sign = laplacian > 0 ? 1 : laplacian < 0 ? -1 : 0;
-          const shift = -sign * gradMag * dt;
-
-          for (let c = 0; c < 3; c++) {
-            const val = src[idx + c];
-            data[idx + c] = Math.min(255, Math.max(0, Math.round(val + shift)));
-          }
-        }
-      }
-    }
-  }
-
-  ctx.putImageData(imgData, 0, 0);
-}
-
-// -------------------------------------------------------------
-// 2. Specular Glass Bevel & Highlight Ridge Enhancer
-// Sharpens intense inner/outer metallic reflections and 3D glass contours
-// -------------------------------------------------------------
-export function applySpecularRidgeEnhancer(
-  canvas: HTMLCanvasElement,
-  ridgeBoost: number = 0.65
-): void {
-  const ctx = getCanvasContext(canvas);
-  const w = canvas.width;
-  const h = canvas.height;
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const data = imgData.data;
-  const src = new Uint8ClampedArray(data);
-  const stride = w * 4;
-
-  for (let y = 1; y < h - 1; y++) {
-    const yOff = y * stride;
-    for (let x = 1; x < w - 1; x++) {
-      const idx = yOff + x * 4;
-
-      const r = src[idx];
-      const g = src[idx + 1];
-      const b = src[idx + 2];
-      const lum = (r * 299 + g * 587 + b * 114) / 1000;
-
-      // Check for highlight / specular area
-      if (lum > 40) {
-        const lU = (src[idx - stride] * 299 + src[idx - stride + 1] * 587 + src[idx - stride + 2] * 114) / 1000;
-        const lD = (src[idx + stride] * 299 + src[idx + stride + 1] * 587 + src[idx + stride + 2] * 114) / 1000;
-        const lL = (src[idx - 4] * 299 + src[idx - 3] * 587 + src[idx - 2] * 114) / 1000;
-        const lR = (src[idx + 4] * 299 + src[idx + 5] * 587 + src[idx + 6] * 114) / 1000;
-
-        // Second derivatives along horizontal and vertical
-        const d2x = lL + lR - 2 * lum;
-        const d2y = lU + lD - 2 * lum;
-
-        // If on a sharp ridge line (specular highlight line)
-        if (d2x < -8 || d2y < -8) {
-          const ridgeMag = Math.max(0, -Math.min(d2x, d2y));
-          const factor = 1 + (ridgeMag / 255) * ridgeBoost * 1.6;
-
-          data[idx] = Math.min(255, Math.round(r * factor));
-          data[idx + 1] = Math.min(255, Math.round(g * factor));
-          data[idx + 2] = Math.min(255, Math.round(b * factor));
-        }
-      }
-    }
-  }
-
-  ctx.putImageData(imgData, 0, 0);
-}
-
-// -------------------------------------------------------------
-// 3. Dark Background Void Gate & Color Bleed Suppressor
-// Eliminates fuzzy purple glow bleeding into pitch-black backgrounds
-// -------------------------------------------------------------
-export function applyDarkVoidGate(canvas: HTMLCanvasElement): void {
-  const ctx = getCanvasContext(canvas);
-  const w = canvas.width;
-  const h = canvas.height;
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const data = imgData.data;
-  const stride = w * 4;
-
+  // Extract luminance map
+  const lumMap = new Float32Array(w * h);
   for (let y = 0; y < h; y++) {
     const yOff = y * stride;
+    const rowOff = y * w;
     for (let x = 0; x < w; x++) {
       const idx = yOff + x * 4;
-      const r = data[idx];
-      const g = data[idx + 1];
-      const b = data[idx + 2];
-      const maxC = Math.max(r, g, b);
+      // Standard Rec. 709 luminance
+      lumMap[rowOff + x] = 0.2126 * data[idx] + 0.7152 * data[idx + 1] + 0.0722 * data[idx + 2];
+    }
+  }
 
-      // If very dark background noise / blur bleed
-      if (maxC < 14) {
-        data[idx] = 0;
-        data[idx + 1] = 0;
-        data[idx + 2] = 0;
-      } else if (maxC < 30) {
-        const factor = (maxC - 14) / 16;
-        data[idx] = Math.round(r * factor);
-        data[idx + 1] = Math.round(g * factor);
-        data[idx + 2] = Math.round(b * factor);
+  // Multi-pass adaptive luminance convolution
+  for (let y = 1; y < h - 1; y++) {
+    const yOff = y * stride;
+    const rowOff = y * w;
+    for (let x = 1; x < w - 1; x++) {
+      const idx = yOff + x * 4;
+      const lIdx = rowOff + x;
+
+      const lC = lumMap[lIdx];
+      const lU = lumMap[lIdx - w];
+      const lD = lumMap[lIdx + w];
+      const lL = lumMap[lIdx - 1];
+      const lR = lumMap[lIdx + 1];
+
+      // Cardinal Laplacian
+      const lap = lU + lD + lL + lR - 4 * lC;
+
+      // Diagonal neighbors
+      const lUL = lumMap[lIdx - w - 1];
+      const lUR = lumMap[lIdx - w + 1];
+      const lDL = lumMap[lIdx + w - 1];
+      const lDR = lumMap[lIdx + w + 1];
+      const diagLap = (lUL + lUR + lDL + lDR) * 0.5 - 2 * lC;
+
+      // Combined high-pass delta
+      const delta = -(lap + diagLap * 0.5);
+
+      // Local min/max bounding to guarantee zero halos
+      const minN = Math.min(lC, lU, lD, lL, lR, lUL, lUR, lDL, lDR);
+      const maxN = Math.max(lC, lU, lD, lL, lR, lUL, lUR, lDL, lDR);
+
+      // Desired sharp luminance bounded strictly
+      let targetLum = lC + delta * sharpAmount;
+      targetLum = Math.max(minN, Math.min(maxN, targetLum));
+
+      if (lC > 0.01) {
+        const ratio = targetLum / lC;
+        // Scale RGB proportionally so color / hue never shifts
+        data[idx] = Math.min(255, Math.max(0, Math.round(data[idx] * ratio)));
+        data[idx + 1] = Math.min(255, Math.max(0, Math.round(data[idx + 1] * ratio)));
+        data[idx + 2] = Math.min(255, Math.max(0, Math.round(data[idx + 2] * ratio)));
       }
     }
   }
@@ -297,127 +231,53 @@ export function applyDarkVoidGate(canvas: HTMLCanvasElement): void {
 }
 
 // -------------------------------------------------------------
-// 4. Turbo Contrast-Adaptive Sharpening (CAS Turbo)
-// Delivers maximum micro-detail and crispness with zero haloing
+// 2. High-Frequency Ridge & Micro-Specular Polish
+// Enhances thin highlights and ridges cleanly
 // -------------------------------------------------------------
-export function applyContrastAdaptiveSharpening(
-  canvas: HTMLCanvasElement,
-  sharpnessPercentage: number = 90
-): void {
+export function applySpecularPolish(canvas: HTMLCanvasElement, amount: number = 0.35): void {
   const ctx = getCanvasContext(canvas);
   const w = canvas.width;
   const h = canvas.height;
   const imgData = ctx.getImageData(0, 0, w, h);
   const data = imgData.data;
-  const src = new Uint8ClampedArray(data);
   const stride = w * 4;
 
-  const sharpness = Math.max(0, Math.min(100, sharpnessPercentage)) / 100;
-  if (sharpness <= 0) return;
+  const lum = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const yOff = y * stride;
+    const rowOff = y * w;
+    for (let x = 0; x < w; x++) {
+      const idx = yOff + x * 4;
+      lum[rowOff + x] = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+    }
+  }
 
   for (let y = 1; y < h - 1; y++) {
     const yOff = y * stride;
+    const rowOff = y * w;
     for (let x = 1; x < w - 1; x++) {
       const idx = yOff + x * 4;
+      const lIdx = rowOff + x;
+      const lC = lum[lIdx];
 
-      for (let c = 0; c < 3; c++) {
-        const pC = src[idx + c] / 255;
-        const pU = src[idx - stride + c] / 255;
-        const pD = src[idx + stride + c] / 255;
-        const pL = src[idx - 4 + c] / 255;
-        const pR = src[idx + 4 + c] / 255;
+      if (lC > 40) {
+        const lU = lum[lIdx - w];
+        const lD = lum[lIdx + w];
+        const lL = lum[lIdx - 1];
+        const lR = lum[lIdx + 1];
 
-        // Diagonal neighbors for richer 8-point edge kernel
-        const pUL = src[idx - stride - 4 + c] / 255;
-        const pUR = src[idx - stride + 4 + c] / 255;
-        const pDL = src[idx + stride - 4 + c] / 255;
-        const pDR = src[idx + stride + 4 + c] / 255;
+        const d2x = lL + lR - 2 * lC;
+        const d2y = lU + lD - 2 * lC;
 
-        const minVal = Math.min(pC, pU, pD, pL, pR, pUL, pUR, pDL, pDR);
-        const maxVal = Math.max(pC, pU, pD, pL, pR, pUL, pUR, pDL, pDR);
+        if (d2x < -4 || d2y < -4) {
+          const ridge = Math.max(0, -Math.min(d2x, d2y));
+          const factor = 1 + (ridge / 255) * amount;
 
-        // Calculate dynamic CAS weight
-        const amp = Math.min(minVal, 1.0 - maxVal) / Math.max(maxVal, 0.001);
-        const wVal = -Math.sqrt(Math.max(0, amp)) * (0.28 * sharpness);
-
-        // 8-neighbor weighted CAS kernel
-        const cardinalSum = pU + pD + pL + pR;
-        const diagSum = (pUL + pUR + pDL + pDR) * 0.5;
-        const totalNeighbors = cardinalSum + diagSum;
-        const weightSum = 1.0 + (4.0 + 2.0) * wVal;
-
-        const sharpened = (pC + wVal * totalNeighbors) / Math.max(0.1, weightSum);
-        data[idx + c] = Math.min(255, Math.max(0, Math.round(sharpened * 255)));
-      }
-    }
-  }
-
-  ctx.putImageData(imgData, 0, 0);
-}
-
-// -------------------------------------------------------------
-// 5. Bilateral Denoising (Pre-processing filter)
-// -------------------------------------------------------------
-export function applyBilateralDenoise(canvas: HTMLCanvasElement, strength: number = 0.6): void {
-  const ctx = getCanvasContext(canvas);
-  const w = canvas.width;
-  const h = canvas.height;
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const data = imgData.data;
-  const copy = new Uint8ClampedArray(data);
-  const stride = w * 4;
-
-  const spatialSigma = 1.6;
-  const rangeSigma = 22 * strength + 4;
-  const rangeFactor = -0.5 / (rangeSigma * rangeSigma);
-  const radius = 2;
-
-  const spatialWeights: number[][] = [];
-  for (let dy = -radius; dy <= radius; dy++) {
-    spatialWeights[dy + radius] = [];
-    for (let dx = -radius; dx <= radius; dx++) {
-      const dist2 = dx * dx + dy * dy;
-      spatialWeights[dy + radius][dx + radius] = Math.exp(-0.5 * dist2 / (spatialSigma * spatialSigma));
-    }
-  }
-
-  for (let y = radius; y < h - radius; y++) {
-    const yOffset = y * stride;
-    for (let x = radius; x < w - radius; x++) {
-      const centerIdx = yOffset + x * 4;
-      const cR = copy[centerIdx];
-      const cG = copy[centerIdx + 1];
-      const cB = copy[centerIdx + 2];
-
-      let sumR = 0, sumG = 0, sumB = 0, sumWeight = 0;
-
-      for (let dy = -radius; dy <= radius; dy++) {
-        const rowOff = (y + dy) * stride;
-        const swRow = spatialWeights[dy + radius];
-        for (let dx = -radius; dx <= radius; dx++) {
-          const nIdx = rowOff + (x + dx) * 4;
-          const nR = copy[nIdx];
-          const nG = copy[nIdx + 1];
-          const nB = copy[nIdx + 2];
-
-          const diffR = nR - cR;
-          const diffG = nG - cG;
-          const diffB = nB - cB;
-          const colorDist2 = diffR * diffR + diffG * diffG + diffB * diffB;
-
-          const weight = swRow[dx + radius] * Math.exp(colorDist2 * rangeFactor);
-          sumR += nR * weight;
-          sumG += nG * weight;
-          sumB += nB * weight;
-          sumWeight += weight;
+          data[idx] = Math.min(255, Math.round(data[idx] * factor));
+          data[idx + 1] = Math.min(255, Math.round(data[idx + 1] * factor));
+          data[idx + 2] = Math.min(255, Math.round(data[idx + 2] * factor));
         }
       }
-
-      if (sumWeight > 0) {
-        data[centerIdx] = sumR / sumWeight;
-        data[centerIdx + 1] = sumG / sumWeight;
-        data[centerIdx + 2] = sumB / sumWeight;
-      }
     }
   }
 
@@ -425,14 +285,15 @@ export function applyBilateralDenoise(canvas: HTMLCanvasElement, strength: numbe
 }
 
 // -------------------------------------------------------------
-// 6. Neural Super-Resolution
+// 3. Neural AI Super-Resolution (ESRGAN)
+// Generates genuine high-resolution texture details with WebGL
 // -------------------------------------------------------------
 async function runNeuralSuperResolution(
   source: HTMLCanvasElement,
   scaleFactor: 2 | 4,
   onProgress?: (percent: number, status: string) => void,
   startPercent: number = 25,
-  percentRange: number = 45
+  percentRange: number = 50
 ): Promise<HTMLCanvasElement> {
   const upscaler = scaleFactor === 2 ? getUpscaler2x() : getUpscaler4x();
   const patchSize = 128;
@@ -446,7 +307,7 @@ async function runNeuralSuperResolution(
       output: 'tensor',
       progress: async (p: number) => {
         const overall = Math.min(95, Math.round(startPercent + p * percentRange));
-        onProgress?.(overall, `AI Neural Synthesis (${Math.round(p * 100)}%)...`);
+        onProgress?.(overall, `Neural Super-Resolution (${Math.round(p * 100)}%)...`);
 
         if (Date.now() - lastYieldTime > 50) {
           await yieldToMain();
@@ -467,7 +328,7 @@ async function runNeuralSuperResolution(
     resultTensor.dispose();
     return outCanvas;
   } catch (err) {
-    console.warn('Fallback to high-fidelity progressive scale:', err);
+    console.warn('Neural upscale fallback to high-fidelity progressive scale:', err);
     return progressiveScale(source, source.width * scaleFactor, source.height * scaleFactor);
   }
 }
@@ -504,25 +365,25 @@ export async function enhanceImage(
       scale: scaleMap[optionsOrType] || '4x',
       mode: 'ultra-sharp',
       enhanceQuality: true,
-      sharpness: 90,
+      sharpness: 85,
       denoise: true,
     };
   } else {
     options = {
       enhanceQuality: true,
-      sharpness: 90,
+      sharpness: 85,
       denoise: true,
       ...optionsOrType,
     };
   }
 
-  const { scale, mode = 'ultra-sharp', enhanceQuality = true, sharpness = 90 } = options;
+  const { scale, mode = 'ultra-sharp', sharpness = 85 } = options;
 
-  onProgress?.(5, 'Initializing Ultra-Sharp AI Engine...');
+  onProgress?.(5, 'Initializing Neural AI Super-Resolution Engine...');
   await yieldToMain();
   await initTensorFlow();
 
-  onProgress?.(12, 'Decoding full-resolution source image...');
+  onProgress?.(12, 'Decoding image pixels...');
   const img = await loadImage(file);
   const originalWidth = img.naturalWidth;
   const originalHeight = img.naturalHeight;
@@ -534,64 +395,41 @@ export async function enhanceImage(
   const sourceCanvas = imageToCanvas(img);
   const isTransparent = hasTransparency(sourceCanvas);
 
-  // Pre-processing
-  if (enhanceQuality) {
-    onProgress?.(20, 'Cleaning JPEG block noise & digital compression...');
-    await yieldToMain();
-    applyBilateralDenoise(sourceCanvas, 0.55);
-  }
-
-  // Step 1: High-Fidelity Neural Super Resolution / Progressive Scaling
-  onProgress?.(30, 'Reconstructing ultra-high frequency texture details...');
+  // Step 1: Neural AI Super-Resolution Pass (ESRGAN 4x / 2x)
+  // This generates the actual high-resolution details and sharp contours cleanly
+  onProgress?.(25, 'Running Neural Super-Resolution synthesis...');
   await yieldToMain();
+
+  const aiScaleFactor: 2 | 4 = multiplier >= 4 ? 4 : 2;
+  const aiCanvas = await runNeuralSuperResolution(
+    sourceCanvas,
+    aiScaleFactor,
+    onProgress,
+    25,
+    55
+  );
 
   let masterCanvas: HTMLCanvasElement;
-
-  if (mode === 'vector-logo' || mode === 'ultra-sharp') {
-    // Vector, 3D Icon & Ultra-Sharp Graphic pipeline
-    onProgress?.(40, 'Upscaling to target master resolution...');
+  if (aiCanvas.width !== finalWidth || aiCanvas.height !== finalHeight) {
+    onProgress?.(80, `Refining master ${scale.toUpperCase()} resolution (${finalWidth}×${finalHeight}px)...`);
     await yieldToMain();
-    const scaled = progressiveScale(sourceCanvas, finalWidth, finalHeight);
-
-    // Apply Morphological Shock Filter
-    onProgress?.(55, 'Applying Osher-Rudin Shock Filter (tightening edge slopes)...');
-    await yieldToMain();
-    applyShockFilter(scaled, 2, 0.32);
-
-    // Enhance Specular Ridge & Metallic Highlights
-    onProgress?.(70, 'Sharpening specular reflections & bevel highlights...');
-    await yieldToMain();
-    applySpecularRidgeEnhancer(scaled, 0.85);
-
-    // Clean background bleed
-    applyDarkVoidGate(scaled);
-
-    masterCanvas = scaled;
+    masterCanvas = progressiveScale(aiCanvas, finalWidth, finalHeight);
   } else {
-    // Photorealistic Super-Resolution
-    const aiScaleFactor: 2 | 4 = multiplier >= 4 ? 4 : 2;
-    const aiCanvas = await runNeuralSuperResolution(sourceCanvas, aiScaleFactor, onProgress, 30, 45);
-
-    if (aiCanvas.width !== finalWidth || aiCanvas.height !== finalHeight) {
-      onProgress?.(75, `Scaling to ${scale.toUpperCase()} resolution (${finalWidth}×${finalHeight}px)...`);
-      await yieldToMain();
-      masterCanvas = progressiveScale(aiCanvas, finalWidth, finalHeight);
-    } else {
-      masterCanvas = aiCanvas;
-    }
-
-    // Shock filter pass for photo contours
-    applyShockFilter(masterCanvas, 1, 0.18);
+    masterCanvas = aiCanvas;
   }
 
-  // Step 2: Turbo Contrast-Adaptive Sharpening (CAS)
-  onProgress?.(85, 'Executing Turbo Contrast-Adaptive Sharpening (CAS)...');
+  // Step 2: Color-Safe Luminance Edge & Specular Sharpening
+  onProgress?.(88, 'Polishing razor-sharp edges & specular clarity...');
   await yieldToMain();
-  applyContrastAdaptiveSharpening(masterCanvas, sharpness);
+  applyLuminanceEdgeSharpening(masterCanvas, sharpness, mode);
 
-  // Step 3: Alpha Channel Preservation
+  if (mode === 'ultra-sharp' || mode === 'vector-logo') {
+    applySpecularPolish(masterCanvas, 0.4);
+  }
+
+  // Step 3: Alpha Channel Preservation (for transparent logos)
   if (isTransparent) {
-    onProgress?.(92, 'Preserving alpha transparency channel...');
+    onProgress?.(93, 'Preserving alpha transparency channel...');
     const alphaCanvas = progressiveScale(sourceCanvas, finalWidth, finalHeight);
     const alphaCtx = getCanvasContext(alphaCanvas);
     const alphaData = alphaCtx.getImageData(0, 0, finalWidth, finalHeight).data;
@@ -607,12 +445,12 @@ export async function enhanceImage(
   }
 
   // Step 4: Export Master PNG
-  onProgress?.(96, 'Exporting crystal-clear Ultra HD master file...');
+  onProgress?.(97, 'Exporting pristine Ultra HD image...');
   await yieldToMain();
   const blob = await canvasToBlob(masterCanvas);
   const url = URL.createObjectURL(blob);
 
-  onProgress?.(100, 'Ultra HD Enhancement Complete!');
+  onProgress?.(100, 'Enhancement Complete!');
 
   const typeCompat: EnhancementType = scale === '8x' ? '8k' : scale === '4x' ? '4k' : '2k';
 
@@ -651,17 +489,17 @@ export function getModeLabel(mode: EnhancementMode): { title: string; subtitle: 
   const map: Record<EnhancementMode, { title: string; subtitle: string; icon: string }> = {
     'ultra-sharp': {
       title: 'Ultra Sharp Studio',
-      subtitle: 'Shock-Filter & Specular Bevel Clarity',
+      subtitle: 'Neural Super-Resolution & Razor Edges',
       icon: 'zap',
     },
     'vector-logo': {
       title: 'Vector & Logo Graphic',
-      subtitle: 'Razor-sharp curves, logos & icons',
+      subtitle: 'Anti-aliased curves & text sharpness',
       icon: 'shapes',
     },
     'super-resolution': {
       title: 'Super Resolution',
-      subtitle: 'Photos, landscapes & nature',
+      subtitle: 'Photos, landscapes & real textures',
       icon: 'sparkles',
     },
     'face-portrait': {
