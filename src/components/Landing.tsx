@@ -11,7 +11,7 @@ export default function Landing() {
             <div className="w-10 h-10 rounded-xl glass-brand flex items-center justify-center">
               <Sparkles className="w-5 h-5 text-brand-400" />
             </div>
-            <span className="font-display font-bold text-xl text-white">Image4K</span>
+            <span className="font-display font-bold text-xl text-white">Imagge4k</span>
           </div>
         </div>
       </header>
